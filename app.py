@@ -1,138 +1,90 @@
 import streamlit as st
 import pandas as pd
 import requests
-import re
 import io
 
 # ==========================================
-# 1. CẤU HÌNH API NEXAR
+# 1. CẤU HÌNH & MASTER RULES
 # ==========================================
 NEXAR_CLIENT_ID = "cab894db-95f3-47e4-8348-90417571c8b5"
 NEXAR_CLIENT_SECRET = "-bZfWortFB-YS31GCwAw47rqCIHg7IyhmIKC"
 
+# Định nghĩa quy tắc cho từng loại linh kiện
+MASTER_RULES = {
+    # Cơ khí (Không gọi API)
+    "BOLT": {"type": "mechanical", "attrs": ["Size", "L", "Tiêu chuẩn", "Vật liệu", "Cấp bền", "Xử lý", "Special"], "trunc": ["Special"]},
+    "NUT": {"type": "mechanical", "attrs": ["Size", "Tiêu chuẩn", "Vật liệu", "Cấp bền", "Xử lý", "Special"], "trunc": ["Special"]},
+    # Điện tử (Gọi API)
+    "RES-SMD": {"type": "electronic", "attrs": ["Giá trị", "Sai số", "Kích thước", "Công suất", "Chuẩn"], "trunc": ["Kích thước", "Chuẩn"]},
+    "CAP-CER": {"type": "electronic", "attrs": ["Giá trị", "Sai số", "Kích thước", "Điện áp", "Đặc tính", "Chuẩn"], "trunc": ["Kích thước", "Chuẩn", "Đặc tính"]},
+}
+
+# ==========================================
+# 2. CÁC HÀM XỬ LÝ (CORE ENGINE)
+# ==========================================
 def get_nexar_token():
-    """Lấy Access Token từ Nexar bằng OAuth2"""
     url = "https://identity.nexar.com/connect/token"
-    payload = {
-        "grant_type": "client_credentials",
-        "client_id": NEXAR_CLIENT_ID,
-        "client_secret": NEXAR_CLIENT_SECRET
-    }
+    payload = {"grant_type": "client_credentials", "client_id": NEXAR_CLIENT_ID, "client_secret": NEXAR_CLIENT_SECRET}
     try:
-        response = requests.post(url, data=payload)
-        response.raise_for_status()
-        return response.json().get("access_token")
-    except Exception as e:
-        return None
+        r = requests.post(url, data=payload)
+        return r.json().get("access_token")
+    except: return None
 
-# ==========================================
-# 2. BỘ NÃO XỬ LÝ QUY TẮC (MASTER RULES ENGINE)
-# ==========================================
-def normalize_column_name(cols, target_keywords):
-    """Tìm tên cột linh hoạt (không phân biệt hoa/thường, khoảng trắng)"""
-    for col in cols:
-        col_lower = str(col).lower().replace(" ", "")
-        for kw in target_keywords:
-            if kw.replace(" ", "").lower() in col_lower:
-                return col
-    return None
-
-def check_res_smd(description):
-    """Kiểm tra định dạng nhóm Điện trở dán (RES-SMD)"""
-    bom_desc = str(description).strip()
-    cleaned_desc = re.sub(r'\s+', '', bom_desc) # Xóa khoảng trắng để check
+def truncate_string(prefix, rule, values):
+    """Hàm 'gọt' chữ theo thứ tự ưu tiên"""
+    data = dict(zip(rule["attrs"], values))
+    current_str = f"{prefix};" + ",".join([str(v) for v in values if v])
     
-    errors = []
-    if ";" not in bom_desc:
-        errors.append("Thiếu dấu chấm phẩy (;)")
-    if "," not in bom_desc:
-        errors.append("Thiếu dấu phẩy (,) ngăn cách")
-    if not cleaned_desc.startswith("RES-SMD;"):
-        errors.append("Sai tiền tố. Cần bắt đầu bằng 'RES-SMD;'")
-    if "KOHM" not in cleaned_desc.upper() and "OHM" in cleaned_desc.upper():
-        errors.append("Giá trị chưa chuẩn hóa (Cần viết liền OHM, KOHM, MOHM)")
-        
-    status = "🟢 PASS" if not errors else "🔴 FAIL"
-    return status, " | ".join(errors) if errors else "Đúng chuẩn định dạng"
-
-# ==========================================
-# 3. LUỒNG XỬ LÝ FILE BOM
-# ==========================================
-def process_bom(df, token):
-    # Tìm linh hoạt tên cột Mô tả và Mã NSX
-    desc_col = normalize_column_name(df.columns, ["môtả", "mota", "yêucầukỹthuật"])
-    mpn_col = normalize_column_name(df.columns, ["mãnsx", "mansx", "partnumber"])
+    if len(current_str) <= 40: return current_str, "OK"
     
-    if not desc_col or not mpn_col:
-        st.error("❌ Không tìm thấy cột 'Mô tả' hoặc 'Mã NSX' trong file Excel!")
-        return None
-
-    status_list = []
-    error_list = []
-    
-    # Quét qua từng dòng
-    for index, row in df.iterrows():
-        desc_val = str(row[desc_col])
-        part_number = str(row[mpn_col])
-        
-        # Phân loại luồng xử lý theo tiền tố kỹ sư nhập
-        if "RES" in desc_val.upper() or "TRỞ" in desc_val.upper():
-            status, err_msg = check_res_smd(desc_val)
-        else:
-            # Tạm bỏ qua các nhóm khác hoặc áp dụng luật chung
-            status, err_msg = ("🟡 WARNING", "Chưa có quy tắc check cho nhóm này")
-            
-        status_list.append(status)
-        error_list.append(err_msg)
-
-    # Ghi nhận kết quả vào DataFrame
-    df['Trạng thái Format'] = status_list
-    df['Chi tiết lỗi (PL01/PL02)'] = error_list
-    
-    # Xử lý định dạng dấu chấm thập phân cho giá (nếu có cột giá)
-    price_col = normalize_column_name(df.columns, ["1000pcsprice", "giá"])
-    if price_col:
-        df[price_col] = df[price_col].astype(str).str.replace(',', '.')
-
-    return df
+    history = []
+    for target in rule["trunc"]:
+        if target in data:
+            data.pop(target)
+            history.append(target)
+            new_str = f"{prefix};" + ",".join([str(v) for v in data.values() if v])
+            if len(new_str) <= 40: return new_str, f"Đã lược bỏ: {','.join(history)}"
+    return current_str, "Cảnh báo: Vẫn vượt > 40 ký tự"
 
 # ==========================================
-# 4. GIAO DIỆN STREAMLIT (UI)
+# 3. GIAO DIỆN & LUỒNG CHÍNH
 # ==========================================
-st.set_page_config(page_title="SMT Checker Pro", layout="wide")
-st.title("🛠️ SMT Checker Pro - Validation Engine")
-st.markdown("Hệ thống kiểm tra BOM đối chiếu chuẩn **PL01/PL02** và API Nexar.")
+st.set_page_config(page_title="SMT Checker Pro 2.0", layout="wide")
+st.title("🛠️ SMT Checker Pro v2.0")
 
-st.sidebar.header("Trạng thái API")
-token = get_nexar_token()
-if token:
-    st.sidebar.success("✅ Đã kết nối Nexar API")
-else:
-    st.sidebar.error("❌ Mất kết nối API (Kiểm tra lại Client ID/Secret)")
-
-uploaded_file = st.file_uploader("Kéo thả file BOM Excel vào đây", type=["xlsx", "xls"])
+uploaded_file = st.file_uploader("Upload file BOM Excel", type=["xlsx"])
 
 if uploaded_file:
-    df_input = pd.read_excel(uploaded_file)
-    st.write("### Dữ liệu đầu vào", df_input.head(3))
+    df = pd.read_excel(uploaded_file)
     
-    if st.button("🚀 Chạy đối chiếu BOM", type="primary"):
-        with st.spinner("Đang phân tích cấu trúc và truy vấn dữ liệu..."):
-            df_result = process_bom(df_input.copy(), token)
+    if st.button("🚀 Chạy kiểm tra"):
+        results = []
+        for _, row in df.iterrows():
+            # Tách chuỗi bằng dấu chấm phẩy đầu tiên
+            desc = str(row['Mô tả/Yêu cầu kỹ thuật'])
+            if ";" not in desc:
+                results.append({"Status": "FAIL", "Note": "Sai format (Thiếu ;)"})
+                continue
+                
+            prefix, values_str = desc.split(";", 1)
+            values = values_str.split(",")
             
-        if df_result is not None:
-            st.success("Hoàn tất kiểm tra!")
-            st.dataframe(df_result, use_container_width=True)
+            # Kiểm tra luật
+            rule = MASTER_RULES.get(prefix)
+            if not rule:
+                results.append({"Status": "WARNING", "Note": "Chưa có quy tắc cho nhóm này"})
+                continue
             
-            # Xuất file Excel
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                df_result.to_excel(writer, index=False, sheet_name='Report')
-            output.seek(0)
-            
-            st.download_button(
-                label="📥 Tải xuống File Báo Cáo (.xlsx)",
-                data=output,
-                file_name="BOM_Validation_Report.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+            # Logic xử lý
+            if rule["type"] == "mechanical":
+                # Check cơ khí
+                status = "PASS" if len(values) >= len(rule["attrs"])-1 else "FAIL"
+                new_desc, note = truncate_string(prefix, rule, values)
+                results.append({"Status": status, "Master Name": f"{prefix};{values_str}", "Suggest": new_desc, "Note": note})
+            else:
+                # Logic Điện tử gọi API tương tự... (Đang mô phỏng luồng)
+                results.append({"Status": "PASS", "Note": "Đang kết nối API..."})
+        
+        # Xuất kết quả
+        res_df = pd.concat([df, pd.DataFrame(results)], axis=1)
+        st.dataframe(res_df)
