@@ -4,13 +4,13 @@ import requests
 import io
 
 # ==========================================
-# 1. CẤU HÌNH API & MASTER RULES
+# 1. CẤU HÌNH & QUY TẮC (MASTER RULES)
 # ==========================================
 CLIENT_ID = "cab894db-95f3-47e4-8348-90417571c8b5"
 CLIENT_SECRET = "-bZfWortFB-YS31GCwAw47rqCIHg7IyhmIKC"
 
+# Định nghĩa quy tắc chi tiết
 MASTER_RULES = {
-    # Nhóm Cơ khí (Không gọi API)
     "BOLT": {"type": "mechanical", "attrs": ["Size", "L", "Tiêu chuẩn", "Vật liệu", "Cấp bền", "Xử lý", "Special"], "trunc": ["Special"]},
     "NUT": {"type": "mechanical", "attrs": ["Size", "Tiêu chuẩn", "Vật liệu", "Cấp bền", "Xử lý", "Special"], "trunc": ["Special"]},
     "SCREW": {"type": "mechanical", "attrs": ["Size", "L", "Tiêu chuẩn", "Vật liệu", "Special"], "trunc": ["Special"]},
@@ -21,7 +21,7 @@ MASTER_RULES = {
 }
 
 # ==========================================
-# 2. HÀM XỬ LÝ DỮ LIỆU
+# 2. CÁC HÀM XỬ LÝ (CORE)
 # ==========================================
 def get_nexar_token():
     url = "https://identity.nexar.com/connect/token"
@@ -31,19 +31,10 @@ def get_nexar_token():
         return r.json().get("access_token")
     except: return None
 
-def get_api_description(mpn, token):
-    """
-    HÀM GỌI API: Bạn điền query GraphQL cụ thể của bạn vào đây
-    Hiện tại đang để chế độ mô phỏng để bạn không bị lỗi code.
-    """
-    if not token or not mpn: return "N/A (Chưa có API)"
-    # Gợi ý: Tại đây bạn sẽ thực hiện request.post tới Nexar GraphQL endpoint
-    # response = requests.post(url, headers={"Authorization": f"Bearer {token}"}, json={"query": "..."})
-    return f"API_Data_For_{mpn}" # Trả về mô tả lấy từ API
-
 def get_truncation(prefix, rule, values):
     master_name = f"{prefix};" + ",".join(values)
     if len(master_name) <= 40: return master_name, "OK"
+    
     data = dict(zip(rule["attrs"], values))
     history = []
     for target in rule["trunc"]:
@@ -55,44 +46,59 @@ def get_truncation(prefix, rule, values):
     return master_name[:37] + "...", "Cảnh báo: Vẫn > 40 ký tự"
 
 # ==========================================
-# 3. GIAO DIỆN & VÒNG LẶP XỬ LÝ
+# 3. GIAO DIỆN (UI)
 # ==========================================
 st.set_page_config(page_title="Check Description", layout="wide")
 st.title("🛠️ Check Description")
+st.markdown("---")
 
+# Sidebar
+st.sidebar.header("System Status")
 token = get_nexar_token()
-uploaded_file = st.file_uploader("Upload file BOM Excel", type=["xlsx"])
+st.sidebar.metric("API Nexar", "Connected" if token else "Disconnected", delta=None)
+
+# Main Area
+uploaded_file = st.file_uploader("📂 Upload file BOM (.xlsx)", type=["xlsx"])
 
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
-    if st.button("🚀 Kiểm tra"):
-        results = []
-        for _, row in df.iterrows():
-            desc = str(row['Mô tả/Yêu cầu kỹ thuật']).strip()
-            mpn = str(row['Mã NSX']) # Lấy MPN để gọi API
-            
-            # 1. Nhận diện loại linh kiện
-            prefix = desc.split(";")[0] if ";" in desc else "UNKNOWN"
-            rule = MASTER_RULES.get(prefix)
-            
-            # 2. Xử lý API (Luôn thực hiện cho Electronic, bất chấp pass hay fail)
-            api_desc = "-"
-            if rule and rule["type"] == "electronic":
-                api_desc = get_api_description(mpn, token)
-            
-            # 3. Validation Logic
-            if not rule:
-                results.append({"Status": "🟡 WARNING", "Master Name": "-", "Suggest": "-", "Note": "Chưa có quy tắc"})
-            else:
-                # Logic check
-                is_valid = True if rule["type"] == "mechanical" else (api_desc != "N/A (Chưa có API)")
-                status = "🟢 PASS" if is_valid else "🔴 FAIL"
+    if st.button("🚀 Chạy kiểm tra"):
+        with st.spinner("Đang xử lý dữ liệu..."):
+            results = []
+            for _, row in df.iterrows():
+                desc = str(row['Mô tả/Yêu cầu kỹ thuật']).strip()
                 
-                # Cập nhật Master Name
-                master_name = api_desc if rule["type"] == "electronic" else desc
-                suggested, note = get_truncation(prefix, rule, desc.split(";")[1].split(","))
+                if ";" not in desc:
+                    results.append({"Status": "🔴 FAIL", "Master Name": "-", "Suggest": "-", "Note": "Sai format"})
+                    continue
                 
+                prefix, payload = desc.split(";", 1)
+                values = [v.strip() for v in payload.split(",")]
+                rule = MASTER_RULES.get(prefix)
+                
+                if not rule:
+                    results.append({"Status": "🟡 WARNING", "Master Name": "-", "Suggest": "-", "Note": "Chưa có quy tắc"})
+                    continue
+                
+                master_name = f"{prefix};{payload}"
+                suggested, note = get_truncation(prefix, rule, values)
+                
+                # Logic phân nhánh
+                if rule["type"] == "mechanical":
+                    status = "🟢 PASS" if len(values) >= (len(rule["attrs"])-1) else "🔴 FAIL"
+                else:
+                    status = "🟢 PASS" if token else "🔴 FAIL (Thiếu API)"
+                    
                 results.append({"Status": status, "Master Name": master_name, "Suggest": suggested, "Note": note})
 
-        res_df = pd.concat([df, pd.DataFrame(results)], axis=1)
-        st.dataframe(res_df)
+            # Hiển thị kết quả
+            res_df = pd.concat([df, pd.DataFrame(results)], axis=1)
+            st.success("Kiểm tra hoàn tất!")
+            st.dataframe(res_df, use_container_width=True)
+            
+            # Xuất file
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                res_df.to_excel(writer, index=False)
+            
+            st.download_button("📥 Tải file báo cáo (.xlsx)", data=output.getvalue(), file_name="BOM_Check_Result.xlsx")
