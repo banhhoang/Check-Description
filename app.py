@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import requests
 import io
+import re
 
 # ==========================================
 # 1. CẤU HÌNH & QUY TẮC (MASTER RULES)
@@ -9,7 +10,18 @@ import io
 CLIENT_ID = "cab894db-95f3-47e4-8348-90417571c8b5"
 CLIENT_SECRET = "-bZfWortFB-YS31GCwAw47rqCIHg7IyhmIKC"
 
-# TOÀN BỘ DANH MỤC LINH KIỆN ĐIỆN TỬ (PHỤ LỤC 1)
+NEXAR_MAPPING = {
+    "Giá trị": ["resistance", "capacitance", "inductance"],
+    "Sai số": ["tolerance"],
+    "Kích thước": ["package / case", "case/package", "case code - mm", "size / dimension"],
+    "Công suất": ["power (watts)", "power rating", "power"],
+    "Điện áp": ["voltage rating", "voltage - rated", "voltage - dc reverse (vr) (max)", "voltage"],
+    "Đặc tính": ["temperature coefficient", "features"],
+    "ESR": ["equivalent series resistance"],
+    "Dòng điện": ["current rating", "current - average rectified (io)", "current"],
+}
+
+# TOÀN BỘ DANH MỤC ĐIỆN TỬ TỪ PHỤ LỤC 1 (KHÔNG BỎ SÓT BẤT KỲ LINH KIỆN NÀO)
 MASTER_RULES = {
     # --- NHÓM ĐIỆN TRỞ (RESISTOR) ---
     "RES-SMD": {"attrs": ["Giá trị", "Sai số", "Kích thước", "Công suất", "Chuẩn"], "trunc": ["Kích thước", "Chuẩn"]},
@@ -19,19 +31,19 @@ MASTER_RULES = {
     "RES-KITS": {"attrs": ["Giá trị", "Sai số", "Kích thước", "Công suất", "Số lượng", "Chuẩn"], "trunc": ["Kích thước", "Chuẩn"]},
     "RES-ARRAY": {"attrs": ["Giá trị", "Sai số", "Công suất", "Kích thước", "Đặc tính nhiệt", "Điện áp", "ESR", "Chuẩn"], "trunc": ["Kích thước", "Chuẩn"]},
 
-    # --- NHÓM TỤ ĐIỆN (CAPACITOR) ---
-    "CAP-CER SMD": {"attrs": ["Giá trị", "Sai số", "Kích thước", "Điện áp", "Đặc tính", "Chuẩn"], "trunc": ["Kích thước", "Chuẩn"]},
-    "CAP-TA SMD": {"attrs": ["Giá trị", "Sai số", "Kích thước", "Điện áp", "ESR", "Chuẩn"], "trunc": ["Kích thước", "Chuẩn", "ESR"]},
-    "CAP-ALUM SMD": {"attrs": ["Giá trị", "Sai số", "Kích thước", "Điện áp", "ESR", "Chuẩn"], "trunc": ["Kích thước", "Chuẩn", "ESR"]},
-    "CAP-CER DIP": {"attrs": ["Giá trị", "Sai số", "Kích thước", "Điện áp", "Đặc tính", "Chuẩn"], "trunc": ["Kích thước", "Chuẩn"]},
-    "CAP-TA DIP": {"attrs": ["Giá trị", "Sai số", "Kích thước", "Điện áp", "Đặc tính", "Chuẩn"], "trunc": ["Kích thước", "Chuẩn"]},
-    "CAP-ALUM DIP": {"attrs": ["Giá trị", "Sai số", "Kích thước", "Điện áp", "ESR", "Chuẩn"], "trunc": ["Kích thước", "Chuẩn", "ESR"]},
-    "CAP-MICA SMD": {"attrs": ["Giá trị", "Sai số", "Kích thước", "Điện áp", "Đặc tính", "Chuẩn"], "trunc": ["Kích thước", "Chuẩn"]},
-    "CAP-MICA DIP": {"attrs": ["Giá trị", "Sai số", "Kích thước", "Điện áp", "Đặc tính", "Chuẩn"], "trunc": ["Kích thước", "Chuẩn"]},
-    "CAP-VR SMD": {"attrs": ["Giá trị", "Sai số", "Kích thước", "Điện áp", "Chuẩn"], "trunc": ["Kích thước", "Chuẩn"]},
-    "CAP-VR DIP": {"attrs": ["Giá trị", "Sai số", "Kích thước", "Điện áp", "Chuẩn"], "trunc": ["Kích thước", "Chuẩn"]},
-    "CAP-FILM SMD": {"attrs": ["Giá trị", "Sai số", "Kích thước", "Điện áp", "Chuẩn"], "trunc": ["Kích thước", "Chuẩn"]},
-    "CAP-FILM DIP": {"attrs": ["Giá trị", "Sai số", "Kích thước", "Điện áp", "Chuẩn"], "trunc": ["Kích thước", "Chuẩn"]},
+    # --- NHÓM TỤ ĐIỆN (CAPACITOR) - CHUẨN DẤU PHẨY TỪ ẢNH ---
+    "CAP-CER,SMD": {"attrs": ["Giá trị", "Sai số", "Kích thước", "Điện áp", "Đặc tính", "Chuẩn"], "trunc": ["Kích thước", "Chuẩn"]},
+    "CAP-TA,SMD": {"attrs": ["Giá trị", "Sai số", "Kích thước", "Điện áp", "ESR", "Chuẩn"], "trunc": ["Kích thước", "Chuẩn", "ESR"]},
+    "CAP ALUM,SMD": {"attrs": ["Giá trị", "Sai số", "Kích thước", "Điện áp", "ESR", "Chuẩn"], "trunc": ["Kích thước", "Chuẩn", "ESR"]},
+    "CAP-CER,DIP": {"attrs": ["Giá trị", "Sai số", "Kích thước", "Điện áp", "Đặc tính", "Chuẩn"], "trunc": ["Kích thước", "Chuẩn"]},
+    "CAP-TA,DIP": {"attrs": ["Giá trị", "Sai số", "Kích thước", "Điện áp", "Đặc tính", "Chuẩn"], "trunc": ["Kích thước", "Chuẩn"]},
+    "CAP ALUM,DIP": {"attrs": ["Giá trị", "Sai số", "Kích thước", "Điện áp", "ESR", "Chuẩn"], "trunc": ["Kích thước", "Chuẩn", "ESR"]},
+    "CAP MICA,SMD": {"attrs": ["Giá trị", "Sai số", "Kích thước", "Điện áp", "Đặc tính", "Chuẩn"], "trunc": ["Kích thước", "Chuẩn"]},
+    "CAP-MICA,DIP": {"attrs": ["Giá trị", "Sai số", "Kích thước", "Điện áp", "Đặc tính", "Chuẩn"], "trunc": ["Kích thước", "Chuẩn"]},
+    "CAP-VR,SMD": {"attrs": ["Giá trị", "Sai số", "Kích thước", "Điện áp", "Chuẩn"], "trunc": ["Kích thước", "Chuẩn"]},
+    "CAP-VR,DIP": {"attrs": ["Giá trị", "Sai số", "Kích thước", "Điện áp", "Chuẩn"], "trunc": ["Kích thước", "Chuẩn"]},
+    "CAP-FILM,SMD": {"attrs": ["Giá trị", "Sai số", "Kích thước", "Điện áp", "Chuẩn"], "trunc": ["Kích thước", "Chuẩn"]},
+    "CAP-FILM,DIP": {"attrs": ["Giá trị", "Sai số", "Kích thước", "Điện áp", "Chuẩn"], "trunc": ["Kích thước", "Chuẩn"]},
     "CAP-SUPER": {"attrs": ["Giá trị", "Sai số", "Kích thước", "Điện áp", "Chuẩn"], "trunc": ["Kích thước", "Chuẩn"]},
     "CAP-ARRAY": {"attrs": ["Giá trị", "Sai số", "Kích thước", "Điện áp", "Chuẩn"], "trunc": ["Kích thước", "Chuẩn"]},
     "CAP-KITS": {"attrs": ["Giá trị", "Sai số", "Kích thước", "Điện áp", "Số lượng", "Chuẩn"], "trunc": ["Kích thước", "Chuẩn"]},
@@ -152,7 +164,7 @@ MASTER_RULES = {
 }
 
 # ==========================================
-# 2. CÁC HÀM XỬ LÝ (CORE)
+# 2. CÁC HÀM XỬ LÝ (CORE & API)
 # ==========================================
 def get_nexar_token():
     url = "https://identity.nexar.com/connect/token"
@@ -162,25 +174,67 @@ def get_nexar_token():
         return r.json().get("access_token")
     except: return None
 
-def get_api_description(mpn, token, prefix):
-    """
-    HÀM GỌI API THỰC TẾ: Bắt buộc lấy dữ liệu từ Nexar.
-    Bạn cần chèn query GraphQL vào khu vực này.
-    """
+def normalize_for_fuzzy_match(s):
+    """Làm sạch ký tự để máy tính dò TÌM luật gốc (Giúp nhận dạng khi kỹ sư gõ sai)"""
+    return re.sub(r'[^A-Z0-9]', '', str(s).upper())
+
+def get_api_description(mpn, token, actual_prefix, rule):
+    """Bắn Part Number lên API và đúc khuôn Mô tả chuẩn"""
     if not token or pd.isna(mpn) or str(mpn).strip() == "": 
         return None
     
-    # --- KHU VỰC CHÈN LỆNH GRAPHQL CỦA BẠN ---
-    # Ví dụ: 
-    # response = requests.post(url, json={"query": f"...{mpn}..."})
-    # Lấy dữ liệu từ response và ghép thành chuỗi.
-    
-    # GIẢ LẬP KẾT QUẢ API (Thay thế bằng code thật khi bạn có)
-    return f"{prefix};API_Val1,API_Val2,API_Val3" 
+    url = "https://api.nexar.com/graphql"
+    query = """
+    query Search($mpn: String!) {
+      supSearchMpn(q: $mpn, limit: 1) {
+        results {
+          part {
+            specs {
+              attribute { name }
+              value
+            }
+          }
+        }
+      }
+    }
+    """
+    try:
+        response = requests.post(
+            url, 
+            headers={"Authorization": f"Bearer {token}"}, 
+            json={"query": query, "variables": {"mpn": mpn}},
+            timeout=10
+        )
+        data = response.json()
+        results = data.get("data", {}).get("supSearchMpn", {}).get("results", [])
+        
+        if not results: return None 
+        
+        part_specs = results[0].get("part", {}).get("specs", [])
+        spec_dict = {spec["attribute"]["name"].lower(): spec["value"] for spec in part_specs}
+        
+        api_values = []
+        for attr in rule["attrs"]:
+            val = ""
+            if attr == "Chuẩn":
+                val = "Auto" if "aec-q200" in str(spec_dict).lower() else ""
+            else:
+                mapped_keys = NEXAR_MAPPING.get(attr, [])
+                for key in mapped_keys:
+                    if key in spec_dict:
+                        val = str(spec_dict[key]).strip().replace(" ", "")
+                        val = val.replace("µ", "u").replace("μ", "u").replace("Ω", "OHM")
+                        break
+            api_values.append(val if val else "N/A")
+            
+        return f"{actual_prefix};" + ",".join(api_values)
+    except Exception:
+        return None
 
 def get_truncation(prefix, rule, values):
+    """Thuật toán gọt chữ theo Phụ lục"""
     master_name = f"{prefix};" + ",".join(values)
-    if len(master_name) <= 40: return master_name, "OK"
+    if len(master_name) <= 40: return master_name, ""
     
     data = dict(zip(rule["attrs"], values))
     history = []
@@ -189,75 +243,90 @@ def get_truncation(prefix, rule, values):
             data.pop(target)
             history.append(target)
             new_str = f"{prefix};" + ",".join([str(v) for v in data.values() if v])
-            if len(new_str) <= 40: return new_str, f"Gọt: {','.join(history)}"
-    return master_name[:37] + "...", "Cảnh báo: Vẫn > 40 ký tự"
+            if len(new_str) <= 40: return new_str, f"(Đã gọt: {','.join(history)})"
+    return master_name[:37] + "...", "(Cảnh báo: Vẫn > 40 ký tự)"
 
 # ==========================================
-# 3. GIAO DIỆN (UI)
+# 3. GIAO DIỆN & VÒNG LẶP KIỂM DUYỆT KHẮT KHE
 # ==========================================
 st.set_page_config(page_title="Check Description", layout="wide")
-st.title("🛠️ Check Description")
+st.title("🛠️ Check Description (Strict QC Mode)")
 st.markdown("---")
 
-# Sidebar
 st.sidebar.header("System Status")
 token = get_nexar_token()
 st.sidebar.metric("API Nexar", "Connected" if token else "Disconnected", delta=None)
 
-# Main Area
 uploaded_file = st.file_uploader("📂 Upload file BOM (.xlsx)", type=["xlsx"])
 
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
-    if st.button("🚀 Chạy kiểm tra"):
-        with st.spinner("Đang kết nối API và xử lý dữ liệu..."):
+    if st.button("🚀 Chạy kiểm tra & Đối chiếu API"):
+        with st.spinner("Đang kết nối API và đối chiếu dữ liệu..."):
             results = []
             for _, row in df.iterrows():
+                # 1. NHẬN DỮ LIỆU GỐC TỪ KỸ SƯ
                 desc = str(row.get('Mô tả/Yêu cầu kỹ thuật', '')).strip()
-                mpn = str(row.get('Mã NSX', '')).strip() # BẮT BUỘC có Mã NSX để chạy API
+                mpn = str(row.get('Mã NSX', '')).strip()
                 
                 if ";" not in desc:
-                    results.append({"Status": "🔴 FAIL", "Master Name": "-", "Suggest": "-", "Note": "Sai format (;)"})
+                    results.append({"Status": "🔴 FAIL", "Mô tả API": "-", "Suggest": "-", "Note": "Lỗi format: Thiếu dấu chấm phẩy (;)"})
                     continue
                 
-                prefix, payload = desc.split(";", 1)
-                values_from_excel = [v.strip() for v in payload.split(",")]
-                rule = MASTER_RULES.get(prefix)
+                raw_user_prefix = desc.split(";", 1)[0]
+                
+                # 2. DÒ TÌM LUẬT (Để nhận biết kỹ sư đang viết linh kiện gì)
+                actual_prefix = ""
+                rule = None
+                for key, r in MASTER_RULES.items():
+                    if normalize_for_fuzzy_match(raw_user_prefix) == normalize_for_fuzzy_match(key):
+                        actual_prefix = key
+                        rule = r
+                        break
                 
                 if not rule:
-                    results.append({"Status": "🟡 WARNING", "Master Name": "-", "Suggest": "-", "Note": "Chưa có quy tắc"})
+                    results.append({"Status": "🟡 UNVERIFIED", "Mô tả API": "-", "Suggest": "-", "Note": f"Không có quy tắc cho: '{raw_user_prefix}'"})
                     continue
                 
-                # BẮT BUỘC GỌI API CHO MỌI LINH KIỆN TRONG MASTER_RULES
-                api_desc = get_api_description(mpn, token, prefix)
+                # 3. LẤY MÔ TẢ TỪ API LÀM CHUẨN
+                api_desc = get_api_description(mpn, token, actual_prefix, rule)
                 
                 if api_desc:
-                    # Nếu API trả về dữ liệu -> Lấy làm chuẩn
-                    master_name = api_desc
-                    # Tách các thuộc tính từ chuỗi API để đưa vào động cơ gọt chữ
-                    try:
-                        values_for_trunc = api_desc.split(";", 1)[1].split(",")
-                        suggested, note = get_truncation(prefix, rule, values_for_trunc)
-                        status = "🟢 PASS" # Trạng thái dựa trên việc API trả về kết quả tốt
-                    except Exception as e:
-                        suggested, note = "-", "Lỗi tách chuỗi từ API"
-                        status = "🔴 FAIL"
-                else:
-                    # Nếu API không có dữ liệu hoặc lỗi
-                    master_name = f"{prefix};{payload}"
-                    suggested, note = get_truncation(prefix, rule, values_from_excel)
-                    status = "🔴 FAIL (Không tìm thấy API/Thiếu Mã NSX)"
+                    values_for_trunc = api_desc.split(";", 1)[1].split(",")
+                    suggested, trunc_note = get_truncation(actual_prefix, rule, values_for_trunc)
                     
-                results.append({"Status": status, "Master Name": master_name, "Suggest": suggested, "Note": note})
+                    # 4. CHẤM ĐIỂM KHẮT KHE (So sánh mô tả gốc và mô tả API)
+                    if desc == api_desc:
+                        if len(desc) > 40:
+                            status = "🟡 WARNING"
+                            note = f"Mô tả đúng cấu trúc API nhưng vượt 40 ký tự. Vui lòng copy ở cột Suggest. {trunc_note}"
+                        else:
+                            status = "🟢 PASS"
+                            note = "Khớp 100% với dữ liệu hãng"
+                    else:
+                        status = "🔴 FAIL"
+                        # Chỉ lỗi cho kỹ sư biết vì sao FAIL
+                        if raw_user_prefix != actual_prefix:
+                            note = f"Sai chuẩn Tiền tố (Của bạn: '{raw_user_prefix}' | Chuẩn: '{actual_prefix}')"
+                        elif desc.replace(" ", "") == api_desc.replace(" ", ""):
+                            if desc.upper() == api_desc.upper():
+                                note = "Lỗi khoảng trắng: Thừa/thiếu dấu cách so với bản chuẩn API"
+                            else:
+                                note = "Lỗi chữ hoa/chữ thường (Case Sensitivity)"
+                        else:
+                            note = "Thông số mô tả không khớp với thông số thực tế của Mã NSX từ API"
+                            
+                    results.append({"Status": status, "Mô tả API": api_desc, "Suggest": suggested, "Note": note})
+                    
+                else:
+                    results.append({"Status": "🟡 UNVERIFIED", "Mô tả API": "N/A", "Suggest": "-", "Note": "Không tìm thấy Mã NSX này trên API hãng"})
 
-            # Hiển thị kết quả
+            # Xuất báo cáo
             res_df = pd.concat([df, pd.DataFrame(results)], axis=1)
-            st.success("Kiểm tra hoàn tất!")
+            st.success("Hoàn tất đối chiếu 100% dữ liệu với API!")
             st.dataframe(res_df, use_container_width=True)
             
-            # Xuất file
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                 res_df.to_excel(writer, index=False)
-            
-            st.download_button("📥 Tải file báo cáo (.xlsx)", data=output.getvalue(), file_name="BOM_Check_Result.xlsx")
+            st.download_button("📥 Tải file báo cáo (.xlsx)", data=output.getvalue(), file_name="BOM_Check_API_Result.xlsx")
