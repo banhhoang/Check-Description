@@ -164,7 +164,7 @@ MASTER_RULES = {
 }
 
 # ==========================================
-# 2. CÁC HÀM XỬ LÝ (CORE & API)
+# 2. CÁC HÀM XỬ LÝ (CORE & API) - ĐÃ NÂNG CẤP
 # ==========================================
 def get_nexar_token():
     url = "https://identity.nexar.com/connect/token"
@@ -179,16 +179,18 @@ def normalize_for_fuzzy_match(s):
     return re.sub(r'[^A-Z0-9]', '', str(s).upper())
 
 def get_api_description(mpn, token, actual_prefix, rule):
-    """Bắn Part Number lên API và đúc khuôn Mô tả chuẩn"""
+    """Bắn Part Number lên API và đúc khuôn Mô tả chuẩn - Nâng cấp bắt lỗi API"""
     if not token or pd.isna(mpn) or str(mpn).strip() == "": 
-        return None
+        return "NO_MPN"
     
     url = "https://api.nexar.com/graphql"
+    # Dùng supSearch thay vì supSearchMpn để tìm kiếm rộng và chuẩn xác hơn
     query = """
     query Search($mpn: String!) {
-      supSearchMpn(q: $mpn, limit: 1) {
+      supSearch(q: $mpn, limit: 1) {
         results {
           part {
+            mpn
             specs {
               attribute { name }
               value
@@ -206,9 +208,16 @@ def get_api_description(mpn, token, actual_prefix, rule):
             timeout=10
         )
         data = response.json()
-        results = data.get("data", {}).get("supSearchMpn", {}).get("results", [])
         
-        if not results: return None 
+        # Bắt lỗi nếu Nexar từ chối truy vấn (Ví dụ token hết hạn, query sai)
+        if "errors" in data:
+            error_msg = data["errors"][0].get("message", "Unknown API Error")
+            return f"API_ERROR: {error_msg}"
+            
+        results = data.get("data", {}).get("supSearch", {}).get("results", [])
+        
+        if not results: 
+            return "NOT_FOUND_ON_NEXAR"
         
         part_specs = results[0].get("part", {}).get("specs", [])
         spec_dict = {spec["attribute"]["name"].lower(): spec["value"] for spec in part_specs}
@@ -228,8 +237,8 @@ def get_api_description(mpn, token, actual_prefix, rule):
             api_values.append(val if val else "N/A")
             
         return f"{actual_prefix};" + ",".join(api_values)
-    except Exception:
-        return None
+    except Exception as e:
+        return f"CODE_ERROR: {str(e)}"
 
 def get_truncation(prefix, rule, values):
     """Thuật toán gọt chữ theo Phụ lục"""
@@ -284,18 +293,26 @@ if uploaded_file:
                         rule = r
                         break
                 
+                # NẾU KHÔNG CÓ LUẬT -> BÁO LỖI FAIL LUÔN NHƯ YÊU CẦU
                 if not rule:
-                    results.append({"Status": "🟡 UNVERIFIED", "Mô tả API": "-", "Suggest": "-", "Note": f"Không có quy tắc cho: '{raw_user_prefix}'"})
+                    results.append({"Status": "🔴 FAIL", "Mô tả API": "-", "Suggest": "-", "Note": f"Sai tiền tố: '{raw_user_prefix}' không tồn tại trong danh mục chuẩn (Phụ lục 1)"})
                     continue
                 
                 # 3. LẤY MÔ TẢ TỪ API LÀM CHUẨN
                 api_desc = get_api_description(mpn, token, actual_prefix, rule)
                 
-                if api_desc:
+                # XỬ LÝ LỖI TỪ BỘ MÁY API
+                if api_desc == "NO_MPN":
+                    results.append({"Status": "🔴 FAIL", "Mô tả API": "-", "Suggest": "-", "Note": "Dòng này bị bỏ trống Mã NSX nên không thể tra cứu API"})
+                elif api_desc == "NOT_FOUND_ON_NEXAR":
+                    results.append({"Status": "🟡 UNVERIFIED", "Mô tả API": "-", "Suggest": "-", "Note": f"Hệ thống Nexar API không có dữ liệu cho mã NSX: {mpn}"})
+                elif str(api_desc).startswith("API_ERROR:") or str(api_desc).startswith("CODE_ERROR:"):
+                    results.append({"Status": "🔴 FAIL", "Mô tả API": "-", "Suggest": "-", "Note": f"Lỗi hệ thống Nexar: {api_desc}"})
+                else:
+                    # NẾU API TRẢ VỀ CHUỖI THÀNH CÔNG -> CHẤM ĐIỂM
                     values_for_trunc = api_desc.split(";", 1)[1].split(",")
                     suggested, trunc_note = get_truncation(actual_prefix, rule, values_for_trunc)
                     
-                    # 4. CHẤM ĐIỂM KHẮT KHE (So sánh mô tả gốc và mô tả API)
                     if desc == api_desc:
                         if len(desc) > 40:
                             status = "🟡 WARNING"
@@ -317,9 +334,6 @@ if uploaded_file:
                             note = "Thông số mô tả không khớp với thông số thực tế của Mã NSX từ API"
                             
                     results.append({"Status": status, "Mô tả API": api_desc, "Suggest": suggested, "Note": note})
-                    
-                else:
-                    results.append({"Status": "🟡 UNVERIFIED", "Mô tả API": "N/A", "Suggest": "-", "Note": "Không tìm thấy Mã NSX này trên API hãng"})
 
             # Xuất báo cáo
             res_df = pd.concat([df, pd.DataFrame(results)], axis=1)
