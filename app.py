@@ -7,8 +7,8 @@ import re
 # ==========================================
 # 1. CẤU HÌNH & QUY TẮC (MASTER RULES)
 # ==========================================
-CLIENT_ID = "cab894db-95f3-47e4-8348-90417571c8b5"
-CLIENT_SECRET = "-bZfWortFB-YS31GCwAw47rqCIHg7IyhmIKC"
+CLIENT_ID = "8465b917-78b5-4f5b-bfab-f12558ad6e5a"
+CLIENT_SECRET = "eDR1QWB7G51Q62a2FPGZOstwxVEuwcxVapvn"
 
 NEXAR_MAPPING = {
     "Giá trị": ["resistance", "capacitance", "inductance"],
